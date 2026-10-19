@@ -23,3 +23,18 @@ else:
     for r in resultats:
         labels = r["metric"]
         print(f"{labels['namespace']}/{labels['pod']} : {labels['phase']}")
+
+# Les conteneurs qui ont redémarré pendant la dernière heure
+redemarrages = query_prometheus(
+    'increase(kube_pod_container_status_restarts_total[1h]) > 0'
+)
+
+print()
+if not redemarrages:
+    print("Aucun redémarrage pendant la dernière heure.")
+else:
+    print("Redémarrages pendant la dernière heure :")
+    for r in redemarrages:
+        labels = r["metric"]
+        nombre = float(r["value"][1])
+        print(f"  {labels['namespace']}/{labels['pod']} ({labels['container']}) : {nombre:.0f} redémarrage(s)")
