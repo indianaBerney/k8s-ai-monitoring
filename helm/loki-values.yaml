@@ -1,0 +1,48 @@
+# Configuration du chart grafana/loki (stockage des logs)
+# Installé par setup.ps1 avec :
+#   helm upgrade --install loki grafana/loki -n monitoring -f helm/loki-values.yaml
+
+# Un seul pod Loki qui fait tout (lecture, écriture, stockage) : le plus simple pour un cluster de test.
+deploymentMode: SingleBinary
+
+loki:
+  auth_enabled: false            # pas de mot de passe ni de « tenant » : un seul utilisateur
+  commonConfig:
+    replication_factor: 1        # une seule copie des données
+  storage:
+    type: filesystem             # les logs sont stockés sur le disque du pod (pas de MinIO, pas de S3)
+  schemaConfig:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: true
+    size: 5Gi                    # disque de 5 Go pour les logs
+
+# Les autres modes de déploiement sont désactivés.
+backend:
+  replicas: 0
+read:
+  replicas: 0
+write:
+  replicas: 0
+
+# Composants optionnels désactivés pour économiser de la mémoire :
+chunksCache:
+  enabled: false                 # cache (memcached)
+resultsCache:
+  enabled: false                 # cache (memcached)
+gateway:
+  enabled: false                 # proxy devant Loki : inutile, on parle directement au service « loki »
+lokiCanary:
+  enabled: false                 # petit programme de test qui écrit des logs en continu
+test:
+  enabled: false                 # test Helm qui dépend du canary

@@ -1,0 +1,22 @@
+# Configuration du chart kube-prometheus-stack (Prometheus + Grafana)
+# Installé par setup.ps1 avec :
+#   helm upgrade --install monitoring oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack --version 92.3.1 -n monitoring -f helm/prometheus-values.yaml
+
+prometheus:
+  prometheusSpec:
+    # On garde 2 jours de métriques : suffisant pour le projet, et léger pour un laptop.
+    retention: 2d
+
+# Alertmanager envoie des alertes (e-mail, Slack...). On n'en a pas besoin : on le désactive
+# pour économiser de la mémoire.
+alertmanager:
+  enabled: false
+
+grafana:
+  adminPassword: change-me
+  # Grafana affiche déjà Prometheus ; on lui ajoute Loki pour voir aussi les logs.
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      access: proxy
+      url: http://loki.monitoring.svc.cluster.local:3100

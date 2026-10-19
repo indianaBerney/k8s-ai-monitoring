@@ -1,0 +1,80 @@
+# Trois applications volontairement en panne, pour tester l'agent.
+# Chacune a une cause différente et connue, pour vérifier si l'IA la retrouve.
+#
+#   kubectl apply -f tests/test-pannes.yaml       (lancer les pannes)
+#   kubectl get pods -n ai-testing                (voir leur état)
+#   kubectl delete namespace ai-testing           (tout supprimer)
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai-testing
+---
+# Panne 1 : l'application plante au démarrage (CrashLoopBackOff, exit code 1).
+# Cause réelle : elle n'arrive pas à se connecter à sa base de données.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crash-app
+  namespace: ai-testing
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: crash-app }
+  template:
+    metadata:
+      labels: { app: crash-app }
+    spec:
+      containers:
+        - name: crash-app
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "INFO: starting order service"
+              echo "ERROR: database connection refused (postgres:5432)"
+              echo "ERROR: application startup failed"
+              exit 1
+---
+# Panne 2 : l'application utilise plus de mémoire que sa limite (OOMKilled).
+# Cause réelle : limite de 32 Mio, alors que le programme demande 100 Mio.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memory-app
+  namespace: ai-testing
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: memory-app }
+  template:
+    metadata:
+      labels: { app: memory-app }
+    spec:
+      containers:
+        - name: memory-app
+          image: polinux/stress   # image utilisée dans la documentation Kubernetes
+          command: ["stress"]
+          args: ["--vm", "1", "--vm-bytes", "100M", "--vm-hang", "1"]
+          resources:
+            limits:
+              memory: 32Mi
+---
+# Panne 3 : l'image du conteneur n'existe pas (ImagePullBackOff).
+# Cause réelle : faute dans le nom de version de l'image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: image-app
+  namespace: ai-testing
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: image-app }
+  template:
+    metadata:
+      labels: { app: image-app }
+    spec:
+      containers:
+        - name: image-app
+          image: nginx:9.99-does-not-exist

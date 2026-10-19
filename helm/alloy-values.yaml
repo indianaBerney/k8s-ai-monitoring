@@ -1,0 +1,52 @@
+# Configuration du chart grafana/alloy (collecte des logs des pods)
+# Installé par setup.ps1 avec :
+#   helm upgrade --install alloy grafana/alloy -n monitoring -f helm/alloy-values.yaml
+
+controller:
+  # Un Alloy sur chaque nœud du cluster.
+  type: daemonset
+
+alloy:
+  configMap:
+    content: |
+      // 1. Trouver les pods qui tournent sur CE nœud
+      //    (sinon, avec plusieurs nœuds, chaque log serait collecté plusieurs fois).
+      discovery.kubernetes "pods" {
+        role = "pod"
+        selectors {
+          role  = "pod"
+          field = "spec.nodeName=" + sys.env("HOSTNAME")
+        }
+      }
+
+      // 2. Ajouter à chaque log des étiquettes pour pouvoir le retrouver dans Loki :
+      //    namespace, pod et container.
+      discovery.relabel "pods" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+      }
+
+      // 3. Lire les logs des pods (via l'API Kubernetes, comme « kubectl logs »)...
+      loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.pods.output
+        forward_to = [loki.write.loki.receiver]
+      }
+
+      // 4. ... et les envoyer à Loki.
+      loki.write "loki" {
+        endpoint {
+          url = "http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push"
+        }
+      }
