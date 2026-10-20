@@ -1,8 +1,10 @@
 # Configuration du chart grafana/loki (stockage des logs)
 # Installé par setup.ps1 avec :
 #   helm upgrade --install loki grafana/loki -n monitoring -f helm/loki-values.yaml
+#
+# Les logs sont rangés dans Garage (stockage objet compatible S3, voir k8s/garage.yaml).
 
-# Un seul pod Loki qui fait tout (lecture, écriture, stockage) : le plus simple pour un cluster de test.
+# Un seul pod Loki qui fait tout (lecture, écriture) : le plus simple pour un cluster de test.
 deploymentMode: SingleBinary
 
 loki:
@@ -10,12 +12,25 @@ loki:
   commonConfig:
     replication_factor: 1        # une seule copie des données
   storage:
-    type: filesystem             # les logs sont stockés sur le disque du pod (pas de MinIO, pas de S3)
+    type: s3                     # stockage objet, ici fourni par Garage
+    bucketNames:
+      chunks: loki
+      ruler: loki
+      admin: loki
+    s3:
+      endpoint: garage.monitoring.svc.cluster.local:3900
+      region: garage
+      # Les clés viennent du Secret « garage-credentials » (variables d'environnement),
+      # elles ne sont donc jamais écrites dans ce fichier ni dans Git.
+      accessKeyId: ${GARAGE_DEFAULT_ACCESS_KEY}
+      secretAccessKey: ${GARAGE_DEFAULT_SECRET_KEY}
+      s3ForcePathStyle: true     # adresse du type http://garage:3900/loki (style « chemin »)
+      insecure: true             # HTTP sans TLS, à l'intérieur du cluster
   schemaConfig:
     configs:
       - from: "2024-01-01"
         store: tsdb
-        object_store: filesystem
+        object_store: s3
         schema: v13
         index:
           prefix: index_
@@ -23,9 +38,15 @@ loki:
 
 singleBinary:
   replicas: 1
+  # Permet d'utiliser ${...} dans la configuration, remplacé par les variables d'environnement.
+  extraArgs:
+    - -config.expand-env=true
+  extraEnvFrom:
+    - secretRef:
+        name: garage-credentials
   persistence:
     enabled: true
-    size: 5Gi                    # disque de 5 Go pour les logs
+    size: 2Gi                    # disque local pour l'index et le cache ; les logs vont dans Garage
 
 # Les autres modes de déploiement sont désactivés.
 backend:
@@ -46,3 +67,5 @@ lokiCanary:
   enabled: false                 # petit programme de test qui écrit des logs en continu
 test:
   enabled: false                 # test Helm qui dépend du canary
+minio:
+  enabled: false                 # pas de MinIO : on utilise Garage

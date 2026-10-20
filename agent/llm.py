@@ -16,6 +16,9 @@ RULES
 - "now" is the CURRENT state. "history" is what happened recently; every event and log line has an age.
 - Do NOT present an old, resolved event as a current problem. Example: a FailedScheduling event
   from pod start-up is not a problem if the pod is now Running and Ready.
+- Start from now.summary. If all nodes are Ready, there are 0 unhealthy pods and no recent restarts,
+  the status is HEALTHY. Events in "warning_events_already_resolved_object_is_healthy_now" are
+  resolved: mention them at most briefly as past events, never as current problems or causes.
 - A restart counted in the last hour for a pod with pod_still_exists=false is history, not a current issue.
 - If a value is SOURCE_UNAVAILABLE or missing, say the data is missing. Missing data is NEVER proof of health.
 - A CrashLoopBackOff, a non-zero exit code or repeated restarts are serious: the status is then UNHEALTHY.

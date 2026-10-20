@@ -49,26 +49,63 @@ def node_usage():
 
 # ------------------------------------------------------------- cas d'usage 1
 
+def split_warnings(warnings, unhealthy, nodes):
+    """Sépare les alertes encore d'actualité de celles déjà réglées.
+
+    Une alerte est « encore d'actualité » seulement si l'objet concerné va mal MAINTENANT :
+    un pod de la liste des pods en mauvaise santé, ou un nœud qui n'est pas prêt.
+    Sinon (par exemple un FailedScheduling au démarrage d'un pod qui tourne bien
+    aujourd'hui), elle est déjà réglée. Ce tri est fait ici, dans le code, car un petit
+    modèle d'IA a du mal à le faire seul.
+    """
+    problems = {f"{p['namespace']}/{p['pod']}" for p in unhealthy}
+    problems |= {f"None/{n['node']}" for n in nodes if not n["ready"]}
+
+    current, resolved = [], []
+    for event in warnings:
+        (current if event["object"] in problems else resolved).append(event)
+
+    # Les alertes réglées : seulement un résumé, pour ne pas noyer le modèle.
+    resolved_summary = sorted({f"{e['reason']} on {e['object']}" for e in resolved})
+    return current, resolved_summary
+
+
 def cluster_health():
     unhealthy = safe(list_unhealthy_pods)
+    nodes = safe(list_nodes)
     restarts = safe(restarts_last_hour)
+    warnings = safe(events, max_age_minutes=30, warnings_only=True)
 
     # Pour chaque redémarrage récent : le pod existe-t-il encore ?
     if isinstance(restarts, list) and isinstance(unhealthy, list):
         for r in restarts:
             r["pod_still_exists"] = safe(get_pod, r["namespace"], r["pod"]) is not None
 
+    history = {"container_restarts_last_hour": restarts}
+    if all(isinstance(x, list) for x in (warnings, unhealthy, nodes)):
+        current, resolved = split_warnings(warnings, unhealthy, nodes)
+        history["warning_events_still_relevant"] = current
+        history["warning_events_already_resolved_object_is_healthy_now"] = resolved
+    else:
+        history["warning_events_last_30_min"] = warnings
+
+    # Un résumé en une ligne, calculé par le code : le modèle s'appuie dessus.
+    summary = "UNKNOWN: some data sources are unavailable"
+    if isinstance(unhealthy, list) and isinstance(nodes, list):
+        ready = sum(n["ready"] for n in nodes)
+        summary = (
+            f"{ready}/{len(nodes)} nodes Ready, {len(unhealthy)} unhealthy pods right now"
+        )
+
     return {
         "use_case": "cluster health overview",
         "now": {
-            "nodes": safe(list_nodes),
+            "summary": summary,
+            "nodes": nodes,
             "unhealthy_pods": unhealthy,
             "node_usage": safe(node_usage),
         },
-        "history": {
-            "container_restarts_last_hour": restarts,
-            "warning_events_last_30_min": safe(events, max_age_minutes=30, warnings_only=True),
-        },
+        "history": history,
     }
 
 

@@ -101,8 +101,20 @@ Run "helm" @("upgrade", "--install", "monitoring",
     "--wait", "--timeout", "30m")
 
 # ---------------------------------------------------------------------
-Step "4/9 Installation de Loki et Alloy (logs)"
+Step "4/9 Installation de Garage (stockage objet S3), puis Loki et Alloy (logs)"
 # ---------------------------------------------------------------------
+# Identifiants de Garage : générés au hasard une seule fois, gardés dans un Secret Kubernetes.
+if (-not (Succeeds "kubectl" @("get", "secret", "garage-credentials", "-n", $Namespace))) {
+    $hex = { [guid]::NewGuid().ToString("N") }
+    Run "kubectl" @("create", "secret", "generic", "garage-credentials", "-n", $Namespace,
+        "--from-literal=GARAGE_RPC_SECRET=$(& $hex)$(& $hex)",
+        "--from-literal=GARAGE_DEFAULT_ACCESS_KEY=GK$(& $hex)",
+        "--from-literal=GARAGE_DEFAULT_SECRET_KEY=$(& $hex)$(& $hex)",
+        "--from-literal=GARAGE_DEFAULT_BUCKET=loki")
+}
+Run "kubectl" @("apply", "-f", "k8s/garage.yaml")
+Run "kubectl" @("rollout", "status", "statefulset/garage", "-n", $Namespace, "--timeout=300s")
+
 Run "helm" @("repo", "add", "grafana", "https://grafana.github.io/helm-charts", "--force-update")
 Run "helm" @("repo", "update", "grafana")
 Run "helm" @("upgrade", "--install", "loki", "grafana/loki",

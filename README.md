@@ -10,7 +10,8 @@ Projet du cours CloudSys (MSE), inspiré d'un cas d'usage des HUG (Hôpitaux Uni
 
 ```
 Utilisateur ──> Open WebUI ──> Agent (FastAPI) ──> Prometheus  (métriques, historique récent)
-                                    │          ├─> Loki        (logs, collectés par Alloy)
+                                    │          ├─> Loki        (logs, collectés par Alloy,
+                                    │          │                stockés dans Garage, compatible S3)
                                     │          └─> API Kubernetes (état actuel des pods)
                                     └──> LLM Qwen 2.5 via Ollama ──> diagnostic
 ```
@@ -94,13 +95,22 @@ kubectl get pods -n ai-testing
 Puis demandez à l'agent une analyse de cause racine pour chaque pod, et comparez avec la cause réelle.
 Pour tout supprimer : `kubectl delete namespace ai-testing`.
 
+## Stockage
+
+Prometheus garde ses métriques sur disque. Les logs de Loki sont stockés dans **Garage**,
+un stockage objet open source compatible S3, utilisé à la place de MinIO (dont l'édition
+communautaire n'est plus distribuée). Garage est lancé avec `--single-node --default-bucket` :
+il crée seul son cluster d'un nœud, le bucket `loki` et la clé d'accès. Les identifiants sont
+générés au hasard par `setup.ps1` dans le Secret Kubernetes `garage-credentials`, jamais dans Git.
+
 ## Organisation du dépôt
 
 | Fichier | Rôle |
 |---|---|
 | `setup.ps1` | Installe et démarre tout le projet |
 | `helm/prometheus-values.yaml` | Configuration de Prometheus et Grafana |
-| `helm/loki-values.yaml` | Configuration de Loki (stockage des logs, sans MinIO) |
+| `k8s/garage.yaml` | Garage : stockage objet compatible S3 (remplace MinIO), où Loki range ses logs |
+| `helm/loki-values.yaml` | Configuration de Loki, branché sur Garage |
 | `helm/alloy-values.yaml` | Configuration d'Alloy (collecte des logs des pods) |
 | `agent/sources.py` | Accès à Prometheus, Loki et à l'API Kubernetes |
 | `agent/evidence.py` | Rassemble les preuves pour chaque cas d'usage |
@@ -115,6 +125,7 @@ Pour tout supprimer : `kubectl delete namespace ai-testing`.
 - L'absence de données n'est jamais une preuve de bonne santé.
 - Sur un PC sans carte graphique, une réponse peut prendre plusieurs minutes.
 - Version locale (minikube) ; le déploiement sur AWS est l'étape suivante.
+- Garage tourne en mode « un seul nœud » : pas de copie des données (suffisant pour un proof of concept).
 
 ## Dépannage
 

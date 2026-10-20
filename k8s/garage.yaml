@@ -1,0 +1,88 @@
+# Garage : stockage objet compatible S3 (remplace MinIO), en mode « un seul nœud ».
+# Loki y range ses logs dans le bucket « loki ».
+#
+# Les identifiants (clé d'accès, clé secrète, secret RPC) ne sont PAS dans ce fichier :
+# setup.ps1 les génère au hasard dans le Secret Kubernetes « garage-credentials ».
+#
+#   kubectl apply -f k8s/garage.yaml
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: garage-config
+  namespace: monitoring
+data:
+  garage.toml: |
+    metadata_dir = "/var/lib/garage/meta"
+    data_dir = "/var/lib/garage/data"
+    db_engine = "sqlite"
+
+    # Un seul nœud, donc une seule copie des données.
+    replication_factor = 1
+
+    rpc_bind_addr = "0.0.0.0:3901"
+    rpc_public_addr = "127.0.0.1:3901"
+    # rpc_secret : fourni par la variable d'environnement GARAGE_RPC_SECRET
+
+    [s3_api]
+    s3_region = "garage"
+    api_bind_addr = "0.0.0.0:3900"
+
+    [admin]
+    api_bind_addr = "0.0.0.0:3903"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: garage
+  namespace: monitoring
+spec:
+  serviceName: garage
+  replicas: 1
+  selector:
+    matchLabels: { app: garage }
+  template:
+    metadata:
+      labels: { app: garage }
+    spec:
+      containers:
+        - name: garage
+          image: dxflrs/garage:v2.4.1
+          command: ["/garage"]
+          # --single-node    : configure automatiquement un cluster Garage d'un seul nœud
+          # --default-bucket : crée la clé d'accès et le bucket à partir des variables
+          #                    GARAGE_DEFAULT_ACCESS_KEY, GARAGE_DEFAULT_SECRET_KEY et GARAGE_DEFAULT_BUCKET
+          args: ["server", "--single-node", "--default-bucket"]
+          envFrom:
+            - secretRef:
+                name: garage-credentials
+          ports:
+            - { name: s3, containerPort: 3900 }
+            - { name: admin, containerPort: 3903 }
+          readinessProbe:
+            tcpSocket: { port: 3900 }
+            initialDelaySeconds: 5
+          resources:
+            requests: { memory: 64Mi, cpu: 50m }
+            limits: { memory: 512Mi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/garage.toml, subPath: garage.toml }
+            - { name: data, mountPath: /var/lib/garage }
+      volumes:
+        - name: config
+          configMap: { name: garage-config }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 5Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage
+  namespace: monitoring
+spec:
+  selector: { app: garage }
+  ports:
+    - { name: s3, port: 3900, targetPort: 3900 }
