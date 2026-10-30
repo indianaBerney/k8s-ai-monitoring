@@ -1,6 +1,7 @@
 ﻿# =====================================================================
 #  Kubernetes AI Monitoring - Projet 5 (groupe 19)
-#  Installe et démarre tout le projet sur un PC Windows.
+#  Installe et démarre tout le projet sur un PC Windows (minikube).
+#  Sur une machine Linux (AWS EC2) : utiliser setup.sh.
 #
 #  Utilisation (depuis le dossier du projet) :
 #     powershell -ExecutionPolicy Bypass -File .\setup.ps1
@@ -8,10 +9,17 @@
 #  Options (facultatives) :
 #     -MinikubeMemory 6144   mémoire du cluster en Mo (4000 par défaut, pour un PC à 8 Go)
 #     -MinikubeCpus 4        processeurs du cluster (3 par défaut)
-#     -WebUiPort 8080        port d'Open WebUI (8081 par défaut)
-#     -AgentPort 8001        port de l'agent
-#     -Model qwen2.5:7b      modèle d'IA (qwen2.5:3b par défaut)
+#     -WebUiPort 3080        port d'Open WebUI sur le PC (8081 par défaut)
+#     -AgentPort 8001        port de l'agent sur le PC
+#     -Provider ollama       modèle d'IA local (Ollama) au lieu d'AWS Bedrock (par défaut)
+#     -Model qwen2.5:7b      modèle Ollama (qwen2.5:3b par défaut), seulement avec -Provider ollama
 #
+#  Avec Bedrock (par défaut), les identifiants AWS doivent être disponibles AVANT de lancer
+#  le script : variables $env:AWS_ACCESS_KEY_ID et $env:AWS_SECRET_ACCESS_KEY
+#  (+ $env:AWS_SESSION_TOKEN pour des clés temporaires), ou « aws configure ».
+#  Région et modèle : $env:AWS_REGION (eu-central-1 par défaut) et $env:BEDROCK_MODEL_ID.
+#
+#  Tout tourne DANS le cluster : Prometheus, Grafana, Loki, Alloy, Garage, l'agent et Open WebUI.
 #  Le script peut être relancé sans risque : il ne refait que ce qui manque.
 # =====================================================================
 
@@ -20,6 +28,8 @@ param(
     [int]$MinikubeCpus = 3,
     [int]$WebUiPort = 8081,
     [int]$AgentPort = 8001,
+    [ValidateSet("bedrock", "ollama")]
+    [string]$Provider = "bedrock",
     [string]$Model = "qwen2.5:3b"
 )
 
@@ -49,6 +59,14 @@ function Succeeds([string]$Command, [string[]]$Arguments) {
     return $ok
 }
 
+# Crée ou met à jour un objet Kubernetes (Secret, ConfigMap) : « kubectl create » puis « apply ».
+function Apply-Generated([string[]]$Arguments) {
+    $yaml = & kubectl create @Arguments --dry-run=client -o yaml
+    if ($LASTEXITCODE -ne 0) { throw "kubectl create a échoué : $($Arguments -join ' ')" }
+    $yaml | kubectl apply -f - | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "kubectl apply a échoué : $($Arguments[0..2] -join ' ')" }
+}
+
 # Attend qu'une adresse web réponde (code 200), pendant $Seconds secondes au maximum.
 function Wait-Http([string]$Url, [int]$Seconds = 60) {
     $deadline = (Get-Date).AddSeconds($Seconds)
@@ -62,14 +80,23 @@ function Wait-Http([string]$Url, [int]$Seconds = 60) {
     return $false
 }
 
-function Port-InUse([int]$Port) {
-    return [bool](Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+function Port-Process([int]$Port) {
+    $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($connection) { return Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue }
+    return $null
+}
+
+function New-Secret {
+    return ([guid]::NewGuid().ToString("N") + [guid]::NewGuid().ToString("N"))
 }
 
 # ---------------------------------------------------------------------
-Step "1/9 Vérification des outils"
+Step "1/8 Vérification des outils"
 # ---------------------------------------------------------------------
-foreach ($tool in "docker", "kubectl", "minikube", "helm", "python", "ollama") {
+$tools = @("docker", "kubectl", "minikube", "helm")
+if ($Provider -eq "ollama") { $tools += "ollama" }
+foreach ($tool in $tools) {
     if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
         throw "Outil manquant : $tool. Installez-le (voir README.md), puis relancez le script."
     }
@@ -77,10 +104,14 @@ foreach ($tool in "docker", "kubectl", "minikube", "helm", "python", "ollama") {
 if (-not (Succeeds "docker" @("info"))) {
     throw "Docker ne répond pas. Lancez Docker Desktop, attendez 'Engine running', puis relancez le script."
 }
-Write-Host "Tous les outils sont présents."
+$AwsCredentialsFile = Join-Path $HOME ".aws\credentials"
+if ($Provider -eq "bedrock" -and -not $env:AWS_ACCESS_KEY_ID -and -not (Test-Path $AwsCredentialsFile)) {
+    throw "Aucun identifiant AWS trouvé. Définissez `$env:AWS_ACCESS_KEY_ID et `$env:AWS_SECRET_ACCESS_KEY (ou lancez 'aws configure'), ou relancez avec -Provider ollama."
+}
+Write-Host "Tous les outils sont présents. Modèle d'IA : $Provider"
 
 # ---------------------------------------------------------------------
-Step "2/9 Démarrage du cluster Kubernetes (minikube)"
+Step "2/8 Démarrage du cluster Kubernetes (minikube)"
 # ---------------------------------------------------------------------
 if (-not (Succeeds "minikube" @("status"))) {
     Run "minikube" @("start", "--driver=docker", "--cpus=$MinikubeCpus", "--memory=$MinikubeMemory")
@@ -93,7 +124,7 @@ if (-not (Succeeds "kubectl" @("get", "namespace", $Namespace))) {
 }
 
 # ---------------------------------------------------------------------
-Step "3/9 Installation de Prometheus et Grafana (10 à 20 min la première fois)"
+Step "3/8 Installation de Prometheus et Grafana (10 à 20 min la première fois)"
 # ---------------------------------------------------------------------
 Run "helm" @("upgrade", "--install", "monitoring",
     "oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack", "--version", "92.3.1",
@@ -101,15 +132,14 @@ Run "helm" @("upgrade", "--install", "monitoring",
     "--wait", "--timeout", "30m")
 
 # ---------------------------------------------------------------------
-Step "4/9 Installation de Garage (stockage objet S3), puis Loki et Alloy (logs)"
+Step "4/8 Installation de Garage (stockage objet S3), puis Loki et Alloy (logs)"
 # ---------------------------------------------------------------------
 # Identifiants de Garage : générés au hasard une seule fois, gardés dans un Secret Kubernetes.
 if (-not (Succeeds "kubectl" @("get", "secret", "garage-credentials", "-n", $Namespace))) {
-    $hex = { [guid]::NewGuid().ToString("N") }
     Run "kubectl" @("create", "secret", "generic", "garage-credentials", "-n", $Namespace,
-        "--from-literal=GARAGE_RPC_SECRET=$(& $hex)$(& $hex)",
-        "--from-literal=GARAGE_DEFAULT_ACCESS_KEY=GK$(& $hex)",
-        "--from-literal=GARAGE_DEFAULT_SECRET_KEY=$(& $hex)$(& $hex)",
+        "--from-literal=GARAGE_RPC_SECRET=$(New-Secret)",
+        "--from-literal=GARAGE_DEFAULT_ACCESS_KEY=GK$([guid]::NewGuid().ToString('N'))",
+        "--from-literal=GARAGE_DEFAULT_SECRET_KEY=$(New-Secret)",
         "--from-literal=GARAGE_DEFAULT_BUCKET=loki")
 }
 Run "kubectl" @("apply", "-f", "k8s/garage.yaml")
@@ -123,74 +153,111 @@ Run "helm" @("upgrade", "--install", "alloy", "grafana/alloy",
     "--namespace", $Namespace, "-f", "helm/alloy-values.yaml", "--wait", "--timeout", "20m")
 
 # ---------------------------------------------------------------------
-Step "5/9 Préparation de l'agent Python"
+Step "5/8 Construction de l'image de l'agent (Dockerfile)"
 # ---------------------------------------------------------------------
-$Python = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
-if (-not (Test-Path $Python)) {
-    Run "python" @("-m", "venv", ".venv")
-}
-Run $Python @("-m", "pip", "install", "--quiet", "-r", "agent\requirements.txt")
+# L'image est construite avec Docker sur le PC, puis copiée dans minikube : pas besoin de registre.
+Run "docker" @("build", "-t", "k8s-agent:local", "agent")
+Run "minikube" @("image", "load", "--overwrite=true", "k8s-agent:local")
 
 # ---------------------------------------------------------------------
-Step "6/9 Démarrage d'Ollama et du modèle $Model"
+Step "6/8 Réglages et secrets de l'agent"
 # ---------------------------------------------------------------------
-if (-not (Wait-Http "http://localhost:11434" 5)) {
-    Start-Process "ollama" -ArgumentList "serve" -WindowStyle Minimized
-    if (-not (Wait-Http "http://localhost:11434" 60)) { throw "Ollama ne démarre pas." }
-}
-if (-not (Succeeds "ollama" @("show", $Model))) {
-    Run "ollama" @("pull", $Model)   # environ 2 Go pour qwen2.5:3b
-}
-
-# ---------------------------------------------------------------------
-Step "7/9 Ouverture des tunnels vers Prometheus et Loki"
-# ---------------------------------------------------------------------
-function Open-Tunnel([string]$Service, [int]$Port) {
-    if (Port-InUse $Port) {
-        Write-Host "Le port $Port est déjà ouvert : tunnel $Service déjà actif."
-        return
-    }
-    Start-Process "kubectl" -WindowStyle Minimized `
-        -ArgumentList @("port-forward", "-n", $Namespace, "svc/$Service", "${Port}:${Port}")
-}
-Open-Tunnel "monitoring-kube-prometheus-prometheus" 9090
-Open-Tunnel "loki" 3100
-if (-not (Wait-Http "http://localhost:9090/-/ready" 90)) { throw "Prometheus ne répond pas sur le port 9090." }
-if (-not (Wait-Http "http://localhost:3100/ready" 90))   { throw "Loki ne répond pas sur le port 3100." }
-
-# ---------------------------------------------------------------------
-Step "8/9 Démarrage de l'agent (port $AgentPort)"
-# ---------------------------------------------------------------------
+# Clé de l'agent : créée une seule fois, gardée dans .agent-api-key (ignoré par Git).
 $KeyFile = Join-Path $PSScriptRoot ".agent-api-key"
 if (-not (Test-Path $KeyFile)) {
     Set-Content -Path $KeyFile -Value ([guid]::NewGuid().ToString("N")) -Encoding Ascii
 }
-$env:AGENT_API_KEY = (Get-Content $KeyFile -Raw).Trim()
+$AgentKey = (Get-Content $KeyFile -Raw).Trim()
 
-if (-not (Wait-Http "http://localhost:$AgentPort/health" 3)) {
-    $Uvicorn = Join-Path $PSScriptRoot ".venv\Scripts\uvicorn.exe"
-    Start-Process $Uvicorn -WorkingDirectory (Join-Path $PSScriptRoot "agent") -WindowStyle Minimized `
-        -ArgumentList @("api:app", "--host", "0.0.0.0", "--port", "$AgentPort")
-    if (-not (Wait-Http "http://localhost:$AgentPort/health" 60)) { throw "L'agent ne démarre pas." }
-}
+$Region = if ($env:AWS_REGION) { $env:AWS_REGION } else { "eu-central-1" }
+$BedrockModel = if ($env:BEDROCK_MODEL_ID) { $env:BEDROCK_MODEL_ID } else { "eu.amazon.nova-lite-v1:0" }
 
-# ---------------------------------------------------------------------
-Step "9/9 Démarrage d'Open WebUI (port $WebUiPort)"
-# ---------------------------------------------------------------------
-$container = docker ps -a --filter "name=^/open-webui$" --format "{{.Names}}"
-if ($container -eq "open-webui") {
-    Run "docker" @("start", "open-webui")
+Apply-Generated @("configmap", "agent-settings", "-n", $Namespace,
+    "--from-literal=LLM_PROVIDER=$Provider",
+    "--from-literal=AWS_REGION=$Region",
+    "--from-literal=BEDROCK_MODEL_ID=$BedrockModel",
+    "--from-literal=OLLAMA_URL=http://host.minikube.internal:11434",
+    "--from-literal=LLM_MODEL=$Model")
+Apply-Generated @("secret", "generic", "agent-api-key", "-n", $Namespace,
+    "--from-literal=AGENT_API_KEY=$AgentKey")
+
+# Clés AWS pour Bedrock : copiées dans un Secret Kubernetes (jamais dans Git).
+if ($Provider -eq "bedrock") {
+    $awsArgs = @("secret", "generic", "aws-credentials", "-n", $Namespace)
+    if ($env:AWS_ACCESS_KEY_ID) {
+        $awsArgs += "--from-literal=AWS_ACCESS_KEY_ID=$($env:AWS_ACCESS_KEY_ID)"
+        $awsArgs += "--from-literal=AWS_SECRET_ACCESS_KEY=$($env:AWS_SECRET_ACCESS_KEY)"
+        if ($env:AWS_SESSION_TOKEN) { $awsArgs += "--from-literal=AWS_SESSION_TOKEN=$($env:AWS_SESSION_TOKEN)" }
+    }
+    else {
+        $awsArgs += "--from-file=credentials=$AwsCredentialsFile"
+    }
+    Apply-Generated $awsArgs
 }
 else {
-    if (Port-InUse $WebUiPort) {
-        throw "Le port $WebUiPort est déjà utilisé. Relancez avec un autre port, par exemple : -WebUiPort 3080"
+    # Ollama tourne sur le PC ; il doit accepter les connexions venant du cluster.
+    if (-not (Wait-Http "http://localhost:11434" 5)) {
+        $env:OLLAMA_HOST = "0.0.0.0"
+        Start-Process "ollama" -ArgumentList "serve" -WindowStyle Minimized
+        if (-not (Wait-Http "http://localhost:11434" 60)) { throw "Ollama ne démarre pas." }
     }
-    Run "docker" @("run", "-d", "--name", "open-webui", "-p", "${WebUiPort}:8080",
-        "-e", "OLLAMA_BASE_URL=http://host.docker.internal:11434",
-        "-e", "RAG_EMBEDDING_ENGINE=openai", "-e", "HF_HUB_OFFLINE=1",
-        "-v", "open-webui:/app/backend/data", "--restart", "unless-stopped",
-        "ghcr.io/open-webui/open-webui:main")
+    if (-not (Succeeds "ollama" @("show", $Model))) {
+        Run "ollama" @("pull", $Model)   # environ 2 Go pour qwen2.5:3b
+    }
 }
+
+# Open WebUI : sa connexion vers l'agent utilise la même clé.
+$webuiKey = ""
+if (Succeeds "kubectl" @("get", "secret", "open-webui-secrets", "-n", $Namespace)) {
+    $encoded = kubectl get secret open-webui-secrets -n $Namespace -o "jsonpath={.data.WEBUI_SECRET_KEY}"
+    $webuiKey = [Text.Encoding]::ASCII.GetString([Convert]::FromBase64String($encoded))
+}
+if (-not $webuiKey) { $webuiKey = New-Secret }
+Apply-Generated @("secret", "generic", "open-webui-secrets", "-n", $Namespace,
+    "--from-literal=OPENAI_API_KEYS=$AgentKey",
+    "--from-literal=WEBUI_SECRET_KEY=$webuiKey")
+
+# ---------------------------------------------------------------------
+Step "7/8 Déploiement de l'agent et d'Open WebUI dans le cluster"
+# ---------------------------------------------------------------------
+Run "kubectl" @("apply", "-f", "k8s/agent.yaml")
+Run "kubectl" @("apply", "-f", "k8s/open-webui.yaml")
+# Redémarre l'agent pour qu'il prenne la nouvelle image et les nouveaux réglages.
+Run "kubectl" @("rollout", "restart", "deployment/k8s-agent", "-n", $Namespace)
+Run "kubectl" @("rollout", "status", "deployment/k8s-agent", "-n", $Namespace, "--timeout=300s")
+Write-Host "Open WebUI : la première fois, téléchargement d'environ 2 Go, patience..."
+Run "kubectl" @("rollout", "status", "statefulset/open-webui", "-n", $Namespace, "--timeout=30m")
+
+# ---------------------------------------------------------------------
+Step "8/8 Ouverture des accès depuis le PC"
+# ---------------------------------------------------------------------
+# Anciennes versions du projet : agent lancé sur le PC et Open WebUI dans Docker. On les arrête
+# (sans rien supprimer : le conteneur et ses données restent, il ne redémarre juste plus tout seul).
+$old = Port-Process $AgentPort
+if ($old -and $old.ProcessName -ne "kubectl") {
+    Write-Host "Arrêt de l'ancien agent lancé sur le PC ($($old.ProcessName))."
+    Stop-Process -Id $old.Id -Force
+}
+$oldWebUi = docker ps --filter "name=^/open-webui$" --format "{{.Names}}"
+if ($oldWebUi -eq "open-webui") {
+    Write-Host "Arrêt de l'ancien conteneur Docker open-webui (il est remplacé par celui du cluster)."
+    Succeeds "docker" @("update", "--restart=no", "open-webui") | Out-Null
+    Succeeds "docker" @("stop", "open-webui") | Out-Null
+}
+
+function Open-Tunnel([string]$Service, [int]$LocalPort, [int]$RemotePort) {
+    $process = Port-Process $LocalPort
+    if ($process) {
+        Write-Host "Le port $LocalPort est déjà ouvert ($($process.ProcessName)) : tunnel $Service conservé."
+        return
+    }
+    Start-Process "kubectl" -WindowStyle Minimized `
+        -ArgumentList @("port-forward", "-n", $Namespace, "svc/$Service", "${LocalPort}:${RemotePort}")
+}
+Open-Tunnel "k8s-agent" $AgentPort 8001
+Open-Tunnel "open-webui" $WebUiPort 8080
+if (-not (Wait-Http "http://localhost:$AgentPort/health" 60)) { throw "L'agent ne répond pas sur le port $AgentPort." }
+if (-not (Wait-Http "http://localhost:$WebUiPort/health" 180)) { throw "Open WebUI ne répond pas sur le port $WebUiPort." }
 
 # ---------------------------------------------------------------------
 Write-Host ""
@@ -198,14 +265,10 @@ Write-Host "==============================================" -ForegroundColor Gre
 Write-Host "  Tout est prêt !" -ForegroundColor Green
 Write-Host "==============================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Open WebUI :  http://localhost:$WebUiPort  (la première fois, attendez 1 à 2 minutes)"
-Write-Host "Agent      :  http://localhost:$AgentPort/health"
-Write-Host ""
-Write-Host "À faire une seule fois dans Open WebUI :"
-Write-Host "  Panneau d'administration > Réglages > Connexions > + (API OpenAI)"
-Write-Host "    URL : http://host.docker.internal:$AgentPort/v1"
-Write-Host "    Clé : $($env:AGENT_API_KEY)"
-Write-Host "  Puis choisissez le modèle 'k8s-agent' dans une nouvelle conversation."
+Write-Host "Open WebUI : http://localhost:$WebUiPort"
+Write-Host "             (la première fois : créez le compte administrateur, puis choisissez le modèle 'k8s-agent')"
+Write-Host "Agent      : http://localhost:$AgentPort/health  et  http://localhost:$AgentPort/health/sources"
+Write-Host "Clé de l'agent (pour /v1/models) : dans le fichier .agent-api-key"
 Write-Host ""
 Write-Host "Grafana (facultatif) : kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80"
 Write-Host "                       puis http://localhost:3000  (admin / change-me)"

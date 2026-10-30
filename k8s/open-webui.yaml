@@ -1,0 +1,61 @@
+# Open WebUI (l'interface de chat) dans le cluster, namespace « monitoring ».
+# La connexion vers l'agent est déjà configurée : rien à régler à la main.
+#
+# Créé par setup.ps1 / setup.sh avant ce fichier (jamais dans Git) :
+#   - Secret « open-webui-secrets » : OPENAI_API_KEYS (= clé de l'agent), WEBUI_SECRET_KEY
+#
+#   kubectl apply -f k8s/open-webui.yaml
+#   kubectl port-forward -n monitoring svc/open-webui 8081:8080   puis http://localhost:8081
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: open-webui
+  namespace: monitoring
+spec:
+  serviceName: open-webui
+  replicas: 1
+  selector:
+    matchLabels: { app: open-webui }
+  template:
+    metadata:
+      labels: { app: open-webui }
+    spec:
+      containers:
+        - name: open-webui
+          image: ghcr.io/open-webui/open-webui:v0.12.3
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            # L'agent est vu comme une API « compatible OpenAI ».
+            - { name: OPENAI_API_BASE_URLS, value: "http://k8s-agent.monitoring.svc.cluster.local:8001/v1" }
+            - { name: ENABLE_OLLAMA_API, value: "false" }
+            # Pas de téléchargement de modèles d'embedding au démarrage.
+            - { name: RAG_EMBEDDING_ENGINE, value: openai }
+            - { name: HF_HUB_OFFLINE, value: "1" }
+          envFrom:
+            - secretRef: { name: open-webui-secrets }
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests: { memory: 512Mi, cpu: 100m }
+            limits: { memory: 1536Mi }
+          volumeMounts:
+            - { name: data, mountPath: /app/backend/data }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 2Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-webui
+  namespace: monitoring
+spec:
+  selector: { app: open-webui }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }

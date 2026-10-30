@@ -5,8 +5,9 @@ Chaque fonction renvoie un dictionnaire qui sépare clairement :
 - "history" : ce qui s'est passé récemment (Prometheus, événements, logs)
 """
 
-from agent.sources import (
-    events, get_pod, list_nodes, list_unhealthy_pods, loki, previous_logs, prometheus,
+from sources import (
+    events, get_pod, list_nodes, list_pods, list_unhealthy_pods, loki, pods_per_namespace,
+    previous_logs, prometheus,
 )
 
 
@@ -39,12 +40,34 @@ def restarts_last_hour(namespace=None, pod=None):
 
 
 def node_usage():
+    """Utilisation du CPU, de la mémoire et du disque de chaque nœud, en %."""
     cpu = prometheus('100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])))')
     memory = prometheus("100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)")
+    disk = prometheus(
+        'max by (instance) (100 * (1 - node_filesystem_avail_bytes{mountpoint="/"}'
+        ' / node_filesystem_size_bytes{mountpoint="/"}))'
+    )
     return {
         "cpu_percent": {s["labels"].get("instance"): round(s["value"], 1) for s in cpu},
         "memory_percent": {s["labels"].get("instance"): round(s["value"], 1) for s in memory},
+        "disk_percent": {s["labels"].get("instance"): round(s["value"], 1) for s in disk},
     }
+
+
+def pod_usage(namespace):
+    """Mémoire (Mio) et CPU (cœurs) de chaque pod d'un namespace."""
+    memory = prometheus(
+        f'sum by (pod) (container_memory_working_set_bytes{{namespace="{namespace}",container!=""}}) / 1048576'
+    )
+    cpu = prometheus(
+        f'sum by (pod) (rate(container_cpu_usage_seconds_total{{namespace="{namespace}",container!=""}}[5m]))'
+    )
+    usage = {}
+    for s in memory:
+        usage.setdefault(s["labels"].get("pod"), {})["memory_mib"] = round(s["value"])
+    for s in cpu:
+        usage.setdefault(s["labels"].get("pod"), {})["cpu_cores"] = round(s["value"], 3)
+    return usage
 
 
 # ------------------------------------------------------------- cas d'usage 1
@@ -104,9 +127,34 @@ def cluster_health():
             "nodes": nodes,
             "unhealthy_pods": unhealthy,
             "node_usage": safe(node_usage),
+            "pods_per_namespace": safe(pods_per_namespace),
         },
         "history": history,
     }
+
+
+# ------------------------------------------------------------- cas d'usage 1 bis
+
+def namespace_overview(namespace):
+    """Tous les pods d'un namespace, avec leur état et leurs ressources."""
+    return {
+        "use_case": "namespace overview",
+        "namespace": namespace,
+        "now": {
+            "pods": safe(list_pods, namespace),
+            "usage_per_pod": safe(pod_usage, namespace),
+        },
+        "history": {
+            "restarts_last_hour": safe(restarts_last_hour_in_namespace, namespace),
+            "warning_events_last_30_min": safe(
+                events, namespace=namespace, max_age_minutes=30, warnings_only=True
+            ),
+        },
+    }
+
+
+def restarts_last_hour_in_namespace(namespace):
+    return [r for r in restarts_last_hour() if r["namespace"] == namespace]
 
 
 # ------------------------------------------------------------- cas d'usage 2

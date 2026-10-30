@@ -67,10 +67,17 @@ _core_api = None
 
 
 def kube():
-    """Connexion à l'API Kubernetes, avec le même fichier de config que kubectl."""
+    """Connexion à l'API Kubernetes.
+
+    - Dans le cluster (agent lancé dans un pod) : avec le compte de service du pod.
+    - Sur un PC : avec le même fichier de configuration que kubectl.
+    """
     global _core_api
     if _core_api is None:
-        config.load_kube_config()
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            config.load_kube_config()
         _core_api = client.CoreV1Api()
     return _core_api
 
@@ -103,13 +110,20 @@ def container_state(status):
 
 def describe_pod(pod):
     """Résumé de l'état ACTUEL d'un pod et de ses conteneurs."""
+    # Limites de ressources déclarées (utile pour expliquer un OOMKilled).
+    limits = {
+        c.name: (c.resources.limits or {}) if c.resources else {}
+        for c in pod.spec.containers
+    }
     containers = []
     for status in pod.status.container_statuses or []:
         last = status.last_state.terminated if status.last_state else None
         containers.append({
             "name": status.name,
+            "image": status.image,
             "ready": status.ready,
             "state": container_state(status),
+            "limits": limits.get(status.name) or "none",
             "restart_count_total": status.restart_count,
             "last_termination": (
                 f"{last.reason}, exit code {last.exit_code}, {age_text(last.finished_at)}"
@@ -150,11 +164,36 @@ def list_unhealthy_pods():
 
 
 def list_nodes():
+    """Les nœuds : prêt ou non, alertes de pression (mémoire, disque…) et capacité."""
     nodes = []
     for node in kube().list_node().items:
-        ready = next((c.status for c in node.status.conditions if c.type == "Ready"), "Unknown")
-        nodes.append({"node": node.metadata.name, "ready": ready == "True"})
+        conditions = {c.type: c.status for c in node.status.conditions or []}
+        nodes.append({
+            "node": node.metadata.name,
+            "ready": conditions.get("Ready") == "True",
+            # MemoryPressure, DiskPressure, PIDPressure : "True" veut dire qu'il y a un problème.
+            "pressure": [t for t, s in conditions.items() if t != "Ready" and s == "True"],
+            "capacity": {
+                "cpu": node.status.capacity.get("cpu"),
+                "memory": node.status.capacity.get("memory"),
+            },
+        })
     return nodes
+
+
+def pods_per_namespace():
+    """Nombre de pods par namespace et par phase (Running, Pending, Failed…)."""
+    summary = {}
+    for pod in kube().list_pod_for_all_namespaces().items:
+        phases = summary.setdefault(pod.metadata.namespace, {})
+        phases[pod.status.phase] = phases.get(pod.status.phase, 0) + 1
+    return summary
+
+
+def list_pods(namespace):
+    """Tous les pods d'un namespace, avec leur état actuel."""
+    pods = kube().list_namespaced_pod(namespace).items
+    return [describe_pod(pod) for pod in pods]
 
 
 def events(namespace=None, pod=None, max_age_minutes=60, warnings_only=False):
@@ -164,6 +203,8 @@ def events(namespace=None, pod=None, max_age_minutes=60, warnings_only=False):
         items = api.list_namespaced_event(
             namespace, field_selector=f"involvedObject.name={pod}"
         ).items
+    elif namespace:
+        items = api.list_namespaced_event(namespace).items
     else:
         items = api.list_event_for_all_namespaces().items
 

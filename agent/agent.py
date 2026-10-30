@@ -7,13 +7,13 @@ On peut le tester directement dans le terminal :
 import re
 import sys
 
-#from evidence import cluster_health, investigate_pod, root_cause
-from agent.evidence import cluster_health, investigate_pod, root_cause
-from agent.llm import ask_model
+from evidence import cluster_health, investigate_pod, namespace_overview, root_cause
+from llm import ask_model
 
 HELP = (
-    "I can answer three kinds of questions:\n"
-    "- How healthy is my cluster?\n"
+    "I can answer these kinds of questions:\n"
+    "- How healthy is my cluster? (nodes: CPU, memory, disk; pods per namespace)\n"
+    "- Show the pods in namespace <namespace>\n"
     "- Investigate pod <name> in namespace <namespace>\n"
     "- Root-cause analysis of pod <name> in namespace <namespace>"
 )
@@ -21,6 +21,7 @@ HELP = (
 POD_PATTERN = re.compile(
     r"\bpod\s+([a-z0-9][a-z0-9.-]*)\b.*?\bnamespace\s+([a-z0-9][a-z0-9-]*)\b"
 )
+NAMESPACE_PATTERN = re.compile(r"\bnamespace\s+([a-z0-9][a-z0-9-]*)\b")
 
 
 def collect_evidence(question):
@@ -34,7 +35,13 @@ def collect_evidence(question):
             return root_cause(namespace, pod)
         return investigate_pod(namespace, pod)
 
-    if any(word in text for word in ("cluster", "health", "healthy", "santé", "overview", "état")):
+    match = NAMESPACE_PATTERN.search(text)
+    if match:
+        return namespace_overview(match.group(1))
+
+    if any(word in text for word in (
+        "cluster", "health", "healthy", "santé", "overview", "état", "node", "nœud", "noeud",
+    )):
         return cluster_health()
 
     return None

@@ -1,8 +1,15 @@
 """API web compatible OpenAI, pour qu'Open WebUI voie l'agent comme un « modèle ».
 
-Lancement :
+Dans le cluster : voir Dockerfile et k8s/agent.yaml.
+Sur un PC, pour tester (depuis le dossier agent) :
     $env:AGENT_API_KEY = "une-cle-secrete"
     uvicorn api:app --port 8001
+
+Adresses :
+    GET  /health            l'agent répond, et quel modèle d'IA il utilise
+    GET  /health/sources    l'agent joint-il Prometheus, Loki et l'API Kubernetes ?
+    GET  /v1/models         liste des modèles (clé API obligatoire)
+    POST /v1/chat/completions   poser une question (clé API obligatoire)
 """
 
 import json
@@ -14,24 +21,26 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.concurrency import run_in_threadpool
 
-#from agent import answer
-from agent.agent import answer
+import requests
+
+from agent import answer
+from llm import LLM_PROVIDER, BEDROCK_MODEL_ID, MODEL
+from sources import LOKI_URL, list_nodes, prometheus
+
+LLM_MODEL_NAME = BEDROCK_MODEL_ID if LLM_PROVIDER == "bedrock" else MODEL
 
 MODEL_ID = "k8s-agent"
 API_KEY = os.getenv("AGENT_API_KEY", "")
 
 app = FastAPI(title="Kubernetes monitoring agent")
 
-"""
+
 def check_key(authorization):
     if not API_KEY:
         raise HTTPException(500, "AGENT_API_KEY is not set on the server")
     if authorization != f"Bearer {API_KEY}":
         raise HTTPException(401, "Invalid API key")
-"""
-def check_key(authorization):
-    # En environnement de développement local, on désactive la vérification stricte
-    return True
+
 
 def last_user_message(messages):
     for message in reversed(messages):
@@ -45,7 +54,26 @@ def last_user_message(messages):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """L'agent répond (utilisé par Kubernetes pour savoir si le pod est prêt)."""
+    return {"status": "ok", "llm_provider": LLM_PROVIDER, "llm_model": LLM_MODEL_NAME}
+
+
+@app.get("/health/sources")
+def health_sources():
+    """Vérifie que l'agent arrive à joindre chacune de ses sources de données."""
+    checks = {
+        "prometheus": lambda: prometheus("up") and "ok",
+        "loki": lambda: requests.get(f"{LOKI_URL}/ready", timeout=5).raise_for_status() or "ok",
+        "kubernetes": lambda: f"ok ({len(list_nodes())} node(s))",
+    }
+    result = {}
+    for name, check in checks.items():
+        try:
+            result[name] = check() or "no data"
+        except Exception as error:  # noqa: BLE001
+            result[name] = f"UNAVAILABLE: {type(error).__name__}"
+    result["status"] = "ok" if all(str(v).startswith("ok") for v in result.values()) else "degraded"
+    return result
 
 
 @app.get("/v1/models")
