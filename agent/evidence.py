@@ -5,7 +5,7 @@ Chaque fonction renvoie un dictionnaire qui sépare clairement :
 - "history" : ce qui s'est passé récemment (Prometheus, événements, logs)
 """
 
-from sources import (
+from agent.sources import (
     events, get_pod, list_nodes, list_unhealthy_pods, loki, previous_logs, prometheus,
 )
 

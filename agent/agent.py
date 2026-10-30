@@ -7,8 +7,9 @@ On peut le tester directement dans le terminal :
 import re
 import sys
 
-from evidence import cluster_health, investigate_pod, root_cause
-from llm import ask_model
+#from evidence import cluster_health, investigate_pod, root_cause
+from agent.evidence import cluster_health, investigate_pod, root_cause
+from agent.llm import ask_model
 
 HELP = (
     "I can answer three kinds of questions:\n"
