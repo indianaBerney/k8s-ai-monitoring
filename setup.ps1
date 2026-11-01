@@ -17,7 +17,7 @@
 #  Avec Bedrock (par défaut), les identifiants AWS doivent être disponibles AVANT de lancer
 #  le script : variables $env:AWS_ACCESS_KEY_ID et $env:AWS_SECRET_ACCESS_KEY
 #  (+ $env:AWS_SESSION_TOKEN pour des clés temporaires), ou « aws configure ».
-#  Région et modèle : $env:AWS_REGION (eu-central-1 par défaut) et $env:BEDROCK_MODEL_ID.
+#  Région et modèle : $env:AWS_REGION (us-east-1 par défaut) et $env:BEDROCK_MODEL_ID.
 #
 #  Tout tourne DANS le cluster : Prometheus, Grafana, Loki, Alloy, Garage, l'agent et Open WebUI.
 #  Le script peut être relancé sans risque : il ne refait que ce qui manque.
@@ -173,8 +173,8 @@ if (-not (Test-Path $KeyFile)) {
 }
 $AgentKey = (Get-Content $KeyFile -Raw).Trim()
 
-$Region = if ($env:AWS_REGION) { $env:AWS_REGION } else { "eu-central-1" }
-$BedrockModel = if ($env:BEDROCK_MODEL_ID) { $env:BEDROCK_MODEL_ID } else { "eu.amazon.nova-lite-v1:0" }
+$Region = if ($env:AWS_REGION) { $env:AWS_REGION } else { "us-east-1" }
+$BedrockModel = if ($env:BEDROCK_MODEL_ID) { $env:BEDROCK_MODEL_ID } else { "amazon.nova-lite-v1:0" }
 
 Apply-Generated @("configmap", "agent-settings", "-n", $Namespace,
     "--from-literal=LLM_PROVIDER=$Provider",

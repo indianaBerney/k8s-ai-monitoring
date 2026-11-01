@@ -13,8 +13,8 @@
 #     MINIKUBE_MEMORY   mémoire du cluster en Mo (12000 par défaut, pour une t3.xlarge à 16 Go)
 #     MINIKUBE_CPUS     processeurs du cluster (4 par défaut)
 #     LLM_PROVIDER      bedrock (par défaut) ou ollama
-#     AWS_REGION        région de Bedrock (eu-central-1 par défaut)
-#     BEDROCK_MODEL_ID  modèle (eu.amazon.nova-lite-v1:0 par défaut)
+#     AWS_REGION        région de Bedrock (us-east-1 par défaut)
+#     BEDROCK_MODEL_ID  modèle (amazon.nova-lite-v1:0 par défaut)
 #
 #  Accès à Bedrock : de préférence avec le RÔLE IAM de la machine EC2 (aucune clé à copier).
 #  Sinon : export AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... (AWS_SESSION_TOKEN=...)
@@ -28,8 +28,8 @@ cd "$(dirname "$0")"
 MINIKUBE_MEMORY="${MINIKUBE_MEMORY:-12000}"
 MINIKUBE_CPUS="${MINIKUBE_CPUS:-4}"
 LLM_PROVIDER="${LLM_PROVIDER:-bedrock}"
-AWS_REGION="${AWS_REGION:-eu-central-1}"
-BEDROCK_MODEL_ID="${BEDROCK_MODEL_ID:-eu.amazon.nova-lite-v1:0}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
+BEDROCK_MODEL_ID="${BEDROCK_MODEL_ID:-amazon.nova-lite-v1:0}"
 LLM_MODEL="${LLM_MODEL:-qwen2.5:3b}"
 NS=monitoring
 AGENT_PORT=8001

@@ -68,14 +68,18 @@ Options utiles :
 # Sans compte AWS : modèle local Qwen via Ollama (lent sur un PC sans carte graphique)
 powershell -ExecutionPolicy Bypass -File .\setup.ps1 -Provider ollama
 
-# Région AWS : eu-central-1 (Francfort) par défaut. Autre région, par exemple :
-$env:AWS_REGION = "us-east-1"; $env:BEDROCK_MODEL_ID = "amazon.nova-lite-v1:0"
+# Région AWS : us-east-1 par défaut. Pour l'Europe (Francfort), par exemple :
+$env:AWS_REGION = "eu-central-1"; $env:BEDROCK_MODEL_ID = "eu.amazon.nova-lite-v1:0"
 ```
 
 ## Installation sur AWS EC2
 
-Voir **[docs/deploiement-aws.md](docs/deploiement-aws.md)** : création de la machine, rôle IAM pour Bedrock,
-lancement de `setup.sh`, accès par tunnel SSH, et arrêt pour limiter les coûts.
+Voir **[docs/deploiement-aws.md](docs/deploiement-aws.md)** : rôle IAM pour Bedrock, création de la machine,
+envoi du projet, lancement de `setup.sh`, accès par tunnel SSH, et suppression des ressources.
+
+Déploiement réalisé le 1er novembre 2026 dans le compte AWS du cours : région **us-east-1**, une instance
+**t3.xlarge** (Ubuntu 24.04), rôle IAM `k8s-agent-bedrock-groupe19` limité à Nova Lite. La démonstration a été
+enregistrée en vidéo, puis l'instance a été supprimée pour ne plus générer de coûts.
 
 ## Utilisation
 
@@ -116,6 +120,24 @@ kubectl get pods -n ai-testing
 
 Demandez ensuite à l'agent une analyse de cause racine pour chaque pod, et comparez avec la cause réelle.
 Pour tout supprimer : `kubectl delete namespace ai-testing`.
+
+## Résultats
+
+Questions posées à l'agent (Amazon Nova Lite, température 0), comparées à la réalité :
+
+| Question | Réalité | Réponse de l'agent | Résultat |
+|---|---|---|---|
+| `How healthy is my cluster?` (sans pannes) | Cluster sain | HEALTHY, avec CPU, mémoire, disque et pods par namespace ; anciennes alertes reconnues comme réglées | Correct |
+| `How healthy is my cluster?` (avec pannes) | 3 pods en panne | UNHEALTHY, les 3 pods et leur panne | Correct |
+| `Show the pods in namespace ai-testing` | 3 pods en panne | Les 3 pods, leur état et leurs redémarrages | Correct |
+| Cause racine de `crash-app` | Connexion à la base refusée | « database connection refused (postgres:5432) », lu dans les logs d'avant le plantage | Correct |
+| Cause racine de `memory-app` | 100 Mo pour une limite de 32 Mio | OOMKilled, dépassement de la limite de 32Mi | Correct |
+| Cause racine de `image-app` | L'image n'existe pas | « nginx:9.99-does-not-exist does not exist » | Correct |
+
+Limites observées : l'agent propose parfois des commandes qui modifient le cluster (`kubectl delete pod`,
+`kubectl patch`) ; ce ne sont que des suggestions, l'agent lui-même ne peut que lire. Avec l'ancien modèle
+local (Qwen 2.5 3B), les réponses prenaient 1 à 5 minutes et confondaient parfois des alertes passées avec des
+problèmes actuels : ce tri est maintenant fait dans le code de l'agent, avant l'appel au modèle.
 
 ## Stockage
 
@@ -159,7 +181,7 @@ le bucket `loki` et la clé d'accès. Prometheus est utilisé à la place de Mim
 - Les diagnostics de l'IA peuvent être faux : il faut toujours les vérifier avec `kubectl`.
 - L'absence de données n'est jamais une preuve de bonne santé.
 - Les données du cluster (état, extraits de logs) sont envoyées à AWS Bedrock pour l'analyse. Pour des
-  données réelles d'hôpital, il faudrait valider ce point (région européenne utilisée par défaut).
+  données réelles d'hôpital, il faudrait valider ce point et choisir une région européenne (`eu-central-1`).
 - Un seul nœud, et Garage sans copie des données : suffisant pour un proof of concept, pas pour la production.
 - Les traces ne sont pas couvertes.
 

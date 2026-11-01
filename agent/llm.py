@@ -10,9 +10,10 @@ import os
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "bedrock")
 
-# Bedrock : région européenne (Francfort), donc profil « eu. » du modèle Nova Lite.
-AWS_REGION = os.getenv("AWS_REGION", "eu-central-1")
-BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "eu.amazon.nova-lite-v1:0")
+# Bedrock : région us-east-1 (celle du compte AWS du cours), modèle Nova Lite.
+# Pour l'Europe (Francfort) : AWS_REGION=eu-central-1 et BEDROCK_MODEL_ID=eu.amazon.nova-lite-v1:0
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "amazon.nova-lite-v1:0")
 
 # Ollama (local)
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
