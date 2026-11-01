@@ -43,9 +43,12 @@ def node_usage():
     """Utilisation du CPU, de la mémoire et du disque de chaque nœud, en %."""
     cpu = prometheus('100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])))')
     memory = prometheus("100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)")
+    # Disques réels seulement (pas les disques en mémoire comme tmpfs). Dans minikube, il n'y a pas
+    # de disque « / » visible : on prend le disque réel le plus rempli (par exemple /var).
+    real_disks = 'fstype=~"ext4|xfs|btrfs"'
     disk = prometheus(
-        'max by (instance) (100 * (1 - node_filesystem_avail_bytes{mountpoint="/"}'
-        ' / node_filesystem_size_bytes{mountpoint="/"}))'
+        f"max by (instance) (100 * (1 - node_filesystem_avail_bytes{{{real_disks}}}"
+        f" / node_filesystem_size_bytes{{{real_disks}}}))"
     )
     return {
         "cpu_percent": {s["labels"].get("instance"): round(s["value"], 1) for s in cpu},

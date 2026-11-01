@@ -54,7 +54,7 @@ spec:
       serviceAccountName: k8s-agent
       containers:
         - name: agent
-          image: k8s-agent:local
+          image: k8s-agent:local      # remplacé par setup.ps1 / setup.sh par le nom unique de l'image
           imagePullPolicy: Never      # image construite dans minikube, pas téléchargée
           ports:
             - { name: http, containerPort: 8001 }

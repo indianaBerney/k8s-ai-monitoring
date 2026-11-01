@@ -124,8 +124,11 @@ helm upgrade --install alloy grafana/alloy \
 step "5/9 Construction de l'image de l'agent (Dockerfile)"
 # ---------------------------------------------------------------------
 # Construite avec Docker sur la machine, puis copiée dans minikube : pas besoin de registre.
-docker build -t k8s-agent:local agent
-minikube image load --overwrite=true k8s-agent:local
+# Nom unique à chaque construction : minikube n'a jamais à remplacer une image utilisée par le pod.
+AGENT_IMAGE="k8s-agent:$(date +%Y%m%d-%H%M%S)"
+docker build -t "$AGENT_IMAGE" agent
+echo "Copie de l'image dans minikube (environ 1 minute)..."
+minikube image load "$AGENT_IMAGE"
 
 # ---------------------------------------------------------------------
 step "6/9 Réglages et secrets de l'agent"
@@ -173,7 +176,7 @@ apply_generated secret generic open-webui-secrets -n "$NS" \
 # ---------------------------------------------------------------------
 step "7/9 Déploiement de l'agent et d'Open WebUI dans le cluster"
 # ---------------------------------------------------------------------
-kubectl apply -f k8s/agent.yaml
+sed "s|image: k8s-agent:local|image: $AGENT_IMAGE|" k8s/agent.yaml | kubectl apply -f -
 kubectl apply -f k8s/open-webui.yaml
 kubectl rollout restart deployment/k8s-agent -n "$NS"
 kubectl rollout status deployment/k8s-agent -n "$NS" --timeout=300s
@@ -187,10 +190,10 @@ step "8/9 Ouverture des accès (sur cette machine uniquement, jamais sur Interne
 # Ils se relancent tout seuls si la connexion au pod est coupée.
 mkdir -p logs
 open_tunnel() {  # open_tunnel SERVICE PORT_LOCAL PORT_DISTANT
-    if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$2/health"; then
-        echo "Tunnel $1 déjà actif sur le port $2."
-        return
-    fi
+    # Un tunnel reste accroché à l'ANCIEN pod quand le pod redémarre : on le recrée à chaque fois.
+    pkill -f "port-forward -n $NS svc/$1 " 2>/dev/null || true
+    pkill -f "kubectl port-forward -n $NS svc/$1 " 2>/dev/null || true
+    sleep 1
     nohup bash -c "while true; do kubectl port-forward -n $NS svc/$1 $2:$3 --address 127.0.0.1; sleep 2; done" \
         > "logs/tunnel-$1.log" 2>&1 &
 }

@@ -1,8 +1,9 @@
 # Image de l'agent (FastAPI). Elle tourne dans le cluster, dans le namespace « monitoring ».
 #
 # Construction, puis copie dans minikube (pas besoin de registre d'images) :
-#   docker build -t k8s-agent:local agent
-#   minikube image load --overwrite=true k8s-agent:local
+#   docker build -t k8s-agent:<date> agent
+#   minikube image load k8s-agent:<date>
+# (setup.ps1 / setup.sh le font, avec un nom unique à chaque fois)
 
 FROM python:3.12-slim
 

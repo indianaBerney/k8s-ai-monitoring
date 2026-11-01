@@ -156,8 +156,12 @@ Run "helm" @("upgrade", "--install", "alloy", "grafana/alloy",
 Step "5/8 Construction de l'image de l'agent (Dockerfile)"
 # ---------------------------------------------------------------------
 # L'image est construite avec Docker sur le PC, puis copiée dans minikube : pas besoin de registre.
-Run "docker" @("build", "-t", "k8s-agent:local", "agent")
-Run "minikube" @("image", "load", "--overwrite=true", "k8s-agent:local")
+# Chaque construction reçoit un nom unique (date et heure) : minikube n'a jamais à remplacer
+# une image déjà utilisée par le pod (ce qui peut bloquer).
+$AgentImage = "k8s-agent:" + (Get-Date -Format "yyyyMMdd-HHmmss")
+Run "docker" @("build", "-t", $AgentImage, "agent")
+Write-Host "Copie de l'image dans minikube (environ 1 minute)..."
+Run "minikube" @("image", "load", $AgentImage)
 
 # ---------------------------------------------------------------------
 Step "6/8 Réglages et secrets de l'agent"
@@ -220,9 +224,11 @@ Apply-Generated @("secret", "generic", "open-webui-secrets", "-n", $Namespace,
 # ---------------------------------------------------------------------
 Step "7/8 Déploiement de l'agent et d'Open WebUI dans le cluster"
 # ---------------------------------------------------------------------
-Run "kubectl" @("apply", "-f", "k8s/agent.yaml")
+$manifest = (Get-Content "k8s/agent.yaml" -Raw) -replace "image: k8s-agent:local", "image: $AgentImage"
+$manifest | kubectl apply -f -
+if ($LASTEXITCODE -ne 0) { throw "kubectl apply de k8s/agent.yaml a échoué" }
 Run "kubectl" @("apply", "-f", "k8s/open-webui.yaml")
-# Redémarre l'agent pour qu'il prenne la nouvelle image et les nouveaux réglages.
+# Redémarre l'agent pour qu'il prenne aussi les nouveaux réglages (ConfigMap, Secrets).
 Run "kubectl" @("rollout", "restart", "deployment/k8s-agent", "-n", $Namespace)
 Run "kubectl" @("rollout", "status", "deployment/k8s-agent", "-n", $Namespace, "--timeout=300s")
 Write-Host "Open WebUI : la première fois, téléchargement d'environ 2 Go, patience..."
@@ -245,11 +251,15 @@ if ($oldWebUi -eq "open-webui") {
     Succeeds "docker" @("stop", "open-webui") | Out-Null
 }
 
+# Un tunnel kubectl reste accroché à l'ANCIEN pod quand le pod redémarre : on le recrée à chaque fois.
 function Open-Tunnel([string]$Service, [int]$LocalPort, [int]$RemotePort) {
     $process = Port-Process $LocalPort
-    if ($process) {
-        Write-Host "Le port $LocalPort est déjà ouvert ($($process.ProcessName)) : tunnel $Service conservé."
-        return
+    if ($process -and $process.ProcessName -eq "kubectl") {
+        Stop-Process -Id $process.Id -Force
+        Start-Sleep -Seconds 1
+    }
+    elseif ($process) {
+        throw "Le port $LocalPort est utilisé par $($process.ProcessName). Fermez ce programme, ou relancez avec un autre port (-AgentPort / -WebUiPort)."
     }
     Start-Process "kubectl" -WindowStyle Minimized `
         -ArgumentList @("port-forward", "-n", $Namespace, "svc/$Service", "${LocalPort}:${RemotePort}")
